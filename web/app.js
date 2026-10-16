@@ -873,6 +873,7 @@
     if (pierreView && pierreViewActive()) {
       // Header is rebuilt by the item update (checkbox state included).
       pierreView.setCollapsed(file, file.viewed ? true : file.collapsed);
+      critFind.filesChanged();
       return;
     }
     // Update the checkbox in the file header
@@ -1412,6 +1413,7 @@
         const anyExpanded = files.some(function(f) { return !f.collapsed; });
         if (pierreViewActive() && pierreView) {
           pierreView.setAllCollapsed(files, anyExpanded);
+          critFind.filesChanged();
         } else {
           for (let i = 0; i < files.length; i++) {
             files[i].collapsed = anyExpanded;
@@ -1993,6 +1995,7 @@
     function toggle() {
       const refocus = document.activeElement === chevron;
       pierreView.setCollapsed(file, !file.collapsed);
+      critFind.filesChanged();
       header.classList.toggle('collapsed', !!file.collapsed);
       chevron.setAttribute('aria-expanded', String(!file.collapsed));
       if (refocus) keepChevronFocus(filePath);
@@ -2149,6 +2152,7 @@
     if (pierreUnsubscribeTree) pierreUnsubscribeTree();
     let treeSyncQueued = false;
     pierreUnsubscribeTree = pierreView.viewer.subscribeToScroll(function() {
+      critFind.rowsChanged();
       if (treeSyncQueued) return;
       treeSyncQueued = true;
       requestAnimationFrame(function() { treeSyncQueued = false; syncTreeActiveFromPierre(); });
@@ -2437,12 +2441,93 @@
     return container;
   }
 
+  // ----- Find in diff (Cmd/Ctrl+F) -----
+  // Pierre only mounts rows near the viewport, so the browser's find misses
+  // the rest. crit-find.js searches the model and jumps with Pierre's scroll
+  // API. Rows match what Pierre shows: the prepared hunks for diffs, the
+  // whole file in files mode. Collapsed (and viewed) files, rendered
+  // documents and placeholders show no code rows and are skipped.
+  // Rows are cached per file while what they are built from is unchanged,
+  // so re-searching (as lazy files land) does not rebuild every file. Hunks
+  // are compared one by one: comment and small-gap expansion splice merged
+  // hunks into the same array.
+  const pierreFindRowCache = new WeakMap();
+  function pierreFindRows(file) {
+    if (!file || file.lazy || file.orphaned || file.collapsed) return [];
+    if (pierreIsDocumentView(file) || pierrePlaceholderText(file)) return [];
+    const fileView = pierreIsFileView(file);
+    const hunks = fileView ? [] : pierrePreparedHunks(file);
+    const cached = pierreFindRowCache.get(file);
+    if (cached && cached.fileView === fileView && cached.content === file.content &&
+        cached.hunks.length === hunks.length && cached.hunks.every(function(h, i) { return h === hunks[i]; })) {
+      return cached.rows;
+    }
+    const rows = fileView ? pierreFileFindRows(file) : pierreDiffFindRows(hunks);
+    pierreFindRowCache.set(file, { fileView: fileView, content: file.content, hunks: hunks.slice(), rows: rows });
+    return rows;
+  }
+
+  function pierreFileFindRows(file) {
+    const lines = (file.content || '').split('\n');
+    return lines.map(function(text, i) { return { side: '', line: i + 1, text: text }; });
+  }
+
+  function pierreDiffFindRows(hunks) {
+    const rows = [];
+    for (let h = 0; h < hunks.length; h++) {
+      const lines = hunks[h].Lines || [];
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        if (l.Type === 'del') rows.push({ side: 'old', line: l.OldNum, text: l.Content || '' });
+        else rows.push({ side: '', line: l.NewNum, text: l.Content || '' });
+      }
+    }
+    return rows;
+  }
+
+  const critFind = window.crit.find.createFind({
+    // Story chapters are Pierre hosts too; only the review list is searched.
+    hostSelector: '#filesContainer diffs-container',
+    files: function() { return files; },
+    linesFor: pierreFindRows,
+    // With only rendered documents (a plan review) there is nothing to
+    // search; leave Cmd+F to the browser.
+    isActive: function() {
+      return !!pierreView && pierreViewActive() && !settingsPanelOpen &&
+        files.some(function(f) { return !f.orphaned && !pierreIsDocumentView(f) && !pierrePlaceholderText(f); });
+    },
+    isPending: function(file) { return !!file.lazy && !file.collapsed; },
+    // Start from the file at the top of the list, like the browser's find
+    // starts from the viewport.
+    startFile: function() {
+      const viewer = pierreView && pierreView.viewer;
+      const paths = pierreView ? pierreView.renderedPaths() : [];
+      if (!viewer || paths.length === 0) return null;
+      const top = viewer.getScrollTop();
+      let topPath = paths[0];
+      for (let i = 0; i < paths.length; i++) {
+        if (viewer.getTopForItem(paths[i]) <= top + 60) topPath = paths[i];
+      }
+      return topPath;
+    },
+    load: function(path) { return pierreView ? pierreView.ensureLoaded(path) : null; },
+    reveal: function(match, isCurrent) {
+      if (!pierreView) return null;
+      return pierreView.ensureLoaded(match.path).then(function() {
+        if (!pierreView || !isCurrent()) return null;
+        ignoreTreeObserverUntil = Date.now() + 400;
+        updateTreeActive(match.path);
+        return pierreView.scrollToLine(match.path, match.line, match.side, 'center');
+      });
+    },
+  });
+
   // ----- Quote highlights inside Pierre (CSS Custom Highlight API) -----
   // Comments created from a text selection carry `quote` (+ quote_offset).
   // Pierre owns the code DOM (shadow roots, virtualized), so instead of
   // wrapping text in <mark> we register Ranges with CSS.highlights; the
   // ::highlight(crit-quote) rule is injected into Pierre via unsafeCSS.
-  const PIERRE_UNSAFE_CSS = window.crit.pierreDOM.unsafeCSS;
+  const PIERRE_UNSAFE_CSS = window.crit.pierreDOM.unsafeCSS + window.crit.find.unsafeCSS;
   const pierreDecorations = window.crit.pierreDOM.createDecorations();
 
   function pierreQuotedComments(file) {
@@ -2503,6 +2588,7 @@
   function onPierrePostRender(filePath, node, phase) {
     const host = window.crit.pierreDOM.hostFor(node);
     if (!host) return;
+    critFind.rowsChanged();
     if (phase === 'unmount') { pierreDecorations.unmount(host); return; }
     host.toggleAttribute('data-crit-file-view', session.mode === 'files' && pierreIsFileView(getFileByPath(filePath)));
     pierreDecorations.mount(host, filePath, pierreQuotedComments(getFileByPath(filePath)));
@@ -2642,6 +2728,7 @@
     files.forEach(function(f) { if (pierreIsDocumentView(f)) refreshPierreDocument(f.path); });
     rebuildNavList();
     applyHideResolved();
+    critFind.filesChanged();
   }
 
   // Re-publish one file after a comment/form change. Thread cards are
@@ -2654,6 +2741,7 @@
     for (let i = 0; i < file.comments.length; i++) keys.push(pierreThreadKey(file.comments[i].id));
     keys.push('outdated:' + filePath, 'placeholder:' + filePath);
     pierreView.refreshFile(file, keys);
+    critFind.filesChanged();
     // The document keeps its element; its contents (line comments, forms,
     // typed text via saveOpenFormContent) are rebuilt in place.
     refreshPierreDocument(filePath);
