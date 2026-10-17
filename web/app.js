@@ -10411,15 +10411,19 @@
     },
     enabled: function() { return !settingsPanelOpen; },
     resolve: function(selection) {
+      // A passage of one comment or reply body opens a sub-thread, as `c` does.
+      const message = subthreads.resolveMessageSelection(selection);
+      if (message) return { range: selection.getRangeAt(0).cloneRange(), data: { message: message } };
       const resolved = resolveSelectionComment(selection);
-      return resolved && { range: resolved.range, data: resolved.form };
+      return resolved && { range: resolved.range, data: { form: resolved.form } };
     },
-    onComment: function(form) {
-      // The form resolved when the bar appeared: Pierre may have replaced the
+    onComment: function(data) {
+      // The target resolved when the bar appeared: Pierre may have replaced the
       // selected nodes since, but the lines and the quote still hold.
       const selection = window.getSelection();
       if (selection) selection.removeAllRanges();
-      openForm(form);
+      if (data.message) openSubThreadForm(data.message);
+      else openForm(data.form);
     },
   });
 
