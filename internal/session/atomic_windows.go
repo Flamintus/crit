@@ -45,7 +45,10 @@ func renameAtomic(src, dst string) error {
 // MoveFileEx with MOVEFILE_REPLACE_EXISTING can also briefly surface
 // ERROR_FILE_NOT_FOUND on the destination between delete-and-replace;
 // retry that the same way (see TestConcurrentSaveCritJSON_NoCorruption).
-// 10 attempts with 1→50ms backoff covers any realistic crit workload.
+// 10 attempts with 1→50ms backoff covers any realistic crit workload. A
+// missing file is retried only while a writer's temp file exists, so reading
+// a file that was never written (a new review) returns at once instead of
+// after about 300ms.
 func ReadFileShared(path string) ([]byte, error) {
 	const maxAttempts = 10
 	delay := 1 * time.Millisecond
@@ -57,6 +60,15 @@ func ReadFileShared(path string) ([]byte, error) {
 		data, err = os.ReadFile(path)
 		if err == nil || !isWindowsTransientIOErr(err) {
 			return data, err
+		}
+		if errors.Is(err, fs.ErrNotExist) && !replaceInProgress(path) {
+			// A replace that finished between the read and the temp-file
+			// check leaves no temp file, so read once more before
+			// reporting the file missing. A new sharing error retries.
+			data, err = os.ReadFile(path)
+			if err == nil || !isWindowsTransientIOErr(err) || (errors.Is(err, fs.ErrNotExist) && !replaceInProgress(path)) {
+				return data, err
+			}
 		}
 		time.Sleep(delay)
 		if delay < 50*time.Millisecond {

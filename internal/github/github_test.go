@@ -2868,7 +2868,11 @@ func TestCollectEditedForPush_DetectsBodyDivergence(t *testing.T) {
 // stored in LastPushedBodyHash so the next push is a no-op.
 func TestUpdateCritJSONWithEditedBodies_StampsLastPushedBodyHash(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "review.json")
+	path := filepath.Join(dir, "review")
+	reviewPath := session.ReviewPathsFor(path).Review
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	cj := CritJSON{
 		Files: map[string]CritJSONFile{
@@ -2884,7 +2888,7 @@ func TestUpdateCritJSONWithEditedBodies_StampsLastPushedBodyHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(reviewPath, data, 0644); err != nil {
 		t.Fatalf("write seed: %v", err)
 	}
 
@@ -2896,7 +2900,7 @@ func TestUpdateCritJSONWithEditedBodies_StampsLastPushedBodyHash(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	out, err := os.ReadFile(path)
+	out, err := os.ReadFile(reviewPath)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -3527,7 +3531,11 @@ func TestBodyHashAtPush(t *testing.T) {
 
 func TestUpdateCritJSONWithEditedBodies_ExportedWrapper(t *testing.T) {
 	dir := t.TempDir()
-	critPath := filepath.Join(dir, "review.json")
+	critPath := filepath.Join(dir, "review")
+	reviewPath := session.ReviewPathsFor(critPath).Review
+	if err := os.MkdirAll(critPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	cj := CritJSON{
 		Files: map[string]CritJSONFile{
@@ -3543,7 +3551,7 @@ func TestUpdateCritJSONWithEditedBodies_ExportedWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := os.WriteFile(critPath, data, 0644); err != nil {
+	if err := os.WriteFile(reviewPath, data, 0644); err != nil {
 		t.Fatalf("write seed: %v", err)
 	}
 
@@ -3555,7 +3563,7 @@ func TestUpdateCritJSONWithEditedBodies_ExportedWrapper(t *testing.T) {
 		t.Fatalf("UpdateCritJSONWithEditedBodies: %v", err)
 	}
 
-	out, err := os.ReadFile(critPath)
+	out, err := os.ReadFile(reviewPath)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -3610,5 +3618,32 @@ func TestGHAPIErrorDetail(t *testing.T) {
 				t.Errorf("ghAPIErrorDetail() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// A body edited again while the push ran is kept; only the pushed body's
+// hash is stamped, so the next push sends the newer body.
+func TestUpdateCritJSONWithEditedBodies_KeepsNewerBody(t *testing.T) {
+	critPath := filepath.Join(t.TempDir(), "review")
+	cj := CritJSON{Files: map[string]CritJSONFile{
+		"a.go": {Comments: []Comment{{ID: "c1", GitHubID: 500, Body: "edited again"}}},
+	}}
+	if err := session.SaveCritJSON(critPath, cj); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateCritJSONWithEditedBodies(critPath, []ghEditForPush{{GitHubID: 500, Body: "edited", Path: "a.go"}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(session.ReviewPathsFor(critPath).Review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got CritJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	c := got.Files["a.go"].Comments[0]
+	if c.Body != "edited again" || c.LastPushedBodyHash != bodyHashAtPush("edited") {
+		t.Errorf("comment = %+v", c)
 	}
 }
