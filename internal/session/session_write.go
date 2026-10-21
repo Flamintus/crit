@@ -29,7 +29,7 @@ func (s *Session) scheduleWrite() {
 			return
 		}
 		s.mu.RUnlock()
-		s.WriteFiles()
+		_ = s.writeFilesErr()
 	})
 }
 
@@ -282,11 +282,10 @@ func critJSONIsEmpty(cj CritJSON) bool {
 //
 // Concurrency note: callers that need to guarantee the write is observable
 // before returning a path to a client (e.g. POST /api/finish) MUST use
-// SyncWriteFiles, which serializes against the debounce timer via writeMu
-// and surfaces write errors. Bare WriteFiles is for the timer callback and
-// best-effort flushes (focus change, shutdown).
+// SyncWriteFiles, which surfaces write errors. WriteFiles uses the same
+// serialization but preserves the best-effort API for existing callers.
 func (s *Session) WriteFiles() {
-	_ = s.writeFilesErr()
+	_ = s.SyncWriteFiles()
 }
 
 // SyncWriteFiles flushes pending state to disk synchronously, serialized
@@ -326,6 +325,25 @@ func (s *Session) writeFilesErr() error {
 		return nil
 	}
 
+	// Check before taking the lock: the lock recreates the review folder.
+	if s.handleExternalDeletion(critPath) {
+		return nil
+	}
+	// Preserve the no-op for an empty session without creating a review folder.
+	if _, err := os.Stat(critPath); os.IsNotExist(err) {
+		snap := s.snapshotForWrite(critPath)
+		if critJSONIsEmpty(buildCritJSON(snap)) {
+			s.markEmptyWritten(snap)
+			return nil
+		}
+	}
+	return WithReviewWriteLock(critPath, func() error {
+		return s.writeReviewFile(critPath)
+	})
+}
+
+// Caller holds writeMu and the review-file transaction lock.
+func (s *Session) writeReviewFile(critPath string) error {
 	if s.handleExternalDeletion(critPath) {
 		return nil
 	}
@@ -342,13 +360,7 @@ func (s *Session) writeFilesErr() error {
 		if err := os.Remove(paths.Review); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("removing empty review file: %w", err)
 		}
-		s.mu.Lock()
-		s.lastCritJSONMtime = time.Time{}
-		s.pendingWrite = false
-		s.clearWrittenDeletedCommentIDs(snap.deletedCommentIDs)
-		s.pendingRemoteDeletes = nil
-		s.lastLoadedPendingDeletes = nil
-		s.mu.Unlock()
+		s.markEmptyWritten(snap)
 		return nil
 	}
 
@@ -377,6 +389,18 @@ func (s *Session) writeFilesErr() error {
 		s.mu.Unlock()
 	}
 	return nil
+}
+
+// markEmptyWritten records that an empty snapshot is on disk (no review.json),
+// so the watcher stops treating the session as having a pending write.
+func (s *Session) markEmptyWritten(snap writeFilesSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastCritJSONMtime = time.Time{}
+	s.pendingWrite = false
+	s.clearWrittenDeletedCommentIDs(snap.deletedCommentIDs)
+	s.pendingRemoteDeletes = nil
+	s.lastLoadedPendingDeletes = nil
 }
 
 // clearWrittenDeletedCommentIDs acknowledges only tombstones included in a
