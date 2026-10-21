@@ -698,7 +698,9 @@
       };
     }
     let diffUrl = '/api/file/diff?path=' + enc(fi.path);
-    if (scope && scope !== 'all') {
+    // "all" is sent too: without a scope the server answers from the round
+    // snapshot, while /api/session?scope=all lists the live working tree.
+    if (scope) {
       diffUrl += '&scope=' + enc(scope);
     }
     if (diffCommit) {
@@ -736,7 +738,8 @@
       lazy: false,
       orphaned: false,
       generated: !!fi.generated,
-      fileHash: fileRes.file_hash || '',
+      // Prefer the hash of the content the diff was drawn on (live scopes).
+      fileHash: diffRes.file_hash || fileRes.file_hash || '',
     };
 
     // Parse markdown content into line blocks. Fenced code is tokenized in
@@ -1208,12 +1211,12 @@
         // First launch — prefer "branch" (committed changes only) over "all"
         // (which includes untracked files and can overwhelm large repos).
         diffScope = scopes.indexOf('branch') !== -1 ? 'branch' : 'all';
-        if (diffScope !== 'all') {
-          let corrected = await hydrateStoryIfMissing(await fetchWhenReady('/api/session?scope=' + enc(diffScope)));
-          corrected = await hydrateFullSessionForStoryIfNeeded(corrected);
-          session = corrected;
-          reviewComments = corrected.review_comments || [];
-        }
+        // Re-fetch even for "all": the first fetch had no scope, so it came
+        // from the round snapshot rather than the live working tree.
+        let corrected = await hydrateStoryIfMissing(await fetchWhenReady('/api/session?scope=' + enc(diffScope)));
+        corrected = await hydrateFullSessionForStoryIfNeeded(corrected);
+        session = corrected;
+        reviewComments = corrected.review_comments || [];
       } else if (scopes.indexOf(diffScope) === -1) {
         diffScope = 'all';
         setSetting('diffScope', 'all');
@@ -8019,21 +8022,30 @@
     normalizeCommitPins();
     if (virtualCommitSelected && !commitFrom && !commitThrough) {
       diffCommit = VIRTUAL_WORKING_COMMIT;
-      return;
-    }
-    if (!commitFrom && !commitThrough) {
+    } else if (!commitFrom && !commitThrough) {
       diffCommit = '';
-      return;
-    }
-    if (commitFrom && !commitThrough) {
+    } else if (commitFrom && !commitThrough) {
       diffCommit = commitFrom;
-      return;
-    }
-    if (commitFrom && commitThrough) {
+    } else if (commitFrom && commitThrough) {
       diffCommit = commitFrom + '..' + commitThrough;
-      return;
+    } else {
+      diffCommit = '';
     }
-    diffCommit = '';
+    updateScopePinIndicator();
+  }
+
+  // Marks the scope toggle while a pinned commit overrides it. The hint goes
+  // on each button, since the browser shows the innermost element's title.
+  function updateScopePinIndicator() {
+    if (!wtScopeToggleEl) return;
+    const pinned = !!diffCommit;
+    wtScopeToggleEl.classList.toggle('commit-pinned', pinned);
+    wtScopeToggleEl.querySelectorAll('.toggle-btn').forEach(function(b) {
+      if (b.dataset.baseTitle === undefined) b.dataset.baseTitle = b.title || '';
+      b.title = pinned
+        ? b.dataset.baseTitle + ' (a commit is pinned; click to show this scope)'
+        : b.dataset.baseTitle;
+    });
   }
 
   function clearCommitPins() {
@@ -8515,14 +8527,13 @@
   // ===== Scope Toggle (All / Branch / Staged / Unstaged) =====
   document.getElementById('scopeToggle').addEventListener('click', async function(e) {
     const btn = e.target.closest('.toggle-btn');
-    if (!btn || btn.disabled || btn.classList.contains('active')) return;
+    if (!btn || btn.disabled) return;
     const scope = btn.dataset.scope;
+    if (btn.classList.contains('active') && !diffCommit) return;
     diffScope = scope;
     navCommentId = null;
     setSetting('diffScope', scope);
-    if (scope !== 'all' && scope !== 'branch') {
-      clearCommitPins();
-    }
+    clearCommitPins();
     document.querySelectorAll('#scopeToggle .toggle-btn').forEach(function(b) {
       b.classList.toggle('active', b.dataset.scope === scope);
     });
@@ -9317,7 +9328,8 @@
         const scopeMap = { scope_all: 'all', scope_branch: 'branch', scope_staged: 'staged', scope_unstaged: 'unstaged' };
         const scope = scopeMap[shortcutAction];
         const btn = document.querySelector('#scopeToggle .toggle-btn[data-scope="' + scope + '"]');
-        if (btn && !btn.disabled && !btn.classList.contains('active')) {
+        // The active scope still releases a pinned commit, as a click does.
+        if (btn && !btn.disabled && (!btn.classList.contains('active') || diffCommit)) {
           e.preventDefault();
           btn.click();
         }
