@@ -1278,8 +1278,9 @@ func parseNameStatus(output string) []FileChange {
 	for len(fields) >= 2 {
 		status, path := fields[0], fields[1]
 		fields = fields[2:]
-		// Renames (R100) and copies (C75) add the new path as a third field;
-		// a copy keeps reporting its source path.
+		// Renames (R100) and copies (C75) add the new path as a third field.
+		// A copy reports the new file as added; git lists a changed source
+		// as its own M record.
 		if (strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C")) && len(fields) > 0 {
 			newPath := fields[0]
 			fields = fields[1:]
@@ -1289,8 +1290,10 @@ func parseNameStatus(output string) []FileChange {
 					OldPath: path,
 					Status:  "renamed",
 				})
-				continue
+			} else {
+				changes = append(changes, FileChange{Path: newPath, Status: "added"})
 			}
+			continue
 		}
 		switch status {
 		case "A":
@@ -1482,7 +1485,7 @@ func runDiffNumstat(dir string, refs ...string) (map[string]NumstatEntry, error)
 }
 
 // parseNumstatOutput parses `--numstat -z` output: one NUL-terminated
-// "adds\tdels\tpath" record per file. A rename's record has an empty path,
+// "adds\tdels\tpath" record per file. A rename or copy record has an empty path,
 // followed by the old and the new path as their own fields.
 func parseNumstatOutput(out []byte) map[string]NumstatEntry {
 	stats := make(map[string]NumstatEntry)

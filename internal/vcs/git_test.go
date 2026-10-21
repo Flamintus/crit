@@ -30,7 +30,7 @@ func TestParseNameStatus(t *testing.T) {
 	if changes[3].Path != "new_name.go" || changes[3].OldPath != "old_name.go" || changes[3].Status != "renamed" {
 		t.Errorf("changes[3] = %+v", changes[3])
 	}
-	if changes[4].Path != "src.go" || changes[4].Status != "modified" {
+	if changes[4].Path != "copy.go" || changes[4].OldPath != "" || changes[4].Status != "added" {
 		t.Errorf("changes[4] = %+v", changes[4])
 	}
 	// The copy's second path must not shift the records that follow it.
@@ -1847,9 +1847,7 @@ func TestFileDiffForCommit_FileNotInCommit(t *testing.T) {
 // every listing that reads paths from git must ask for them verbatim.
 func TestPathListings_NonASCIIPaths(t *testing.T) {
 	dir := testutil.InitTestRepo(t)
-	origDir, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	t.Chdir(dir)
 
 	testutil.WriteFile(t, filepath.Join(dir, "début.md"), "a\n")
 	testutil.WriteFile(t, filepath.Join(dir, "réflexion/vérification.md"), "a\nb\nc\n")
