@@ -2516,11 +2516,15 @@
   // ancestor scroll container. The comments panel and other fixed chrome can
   // otherwise make native scrollIntoView move the document instead of the
   // virtualized review list.
-  function scrollPierreElementIntoView(el) {
+  // `isCurrent` (optional) stops the alignment once a newer jump has started,
+  // so a card that cannot reach the center (the top of the list) does not keep
+  // pulling the list back over the next jump.
+  function scrollPierreElementIntoView(el, isCurrent) {
     const root = document.getElementById('filesContainer');
     if (!root || !el) return;
     let frames = 0;
     (function align() {
+      if (isCurrent && !isCurrent()) return;
       const rootRect = root.getBoundingClientRect();
       const elRect = el.getBoundingClientRect();
       const offset = elRect.top - rootRect.top - (root.clientHeight - elRect.height) / 2;
@@ -6274,13 +6278,19 @@
     }
     const section = document.getElementById('reviewConversation');
     if (!section) return;
+    // Supersede a file jump still in flight so it does not scroll back down.
+    const seq = ++pierreJumpSeq;
     const card = section.querySelector('.comment-card[data-comment-id="' + CSS.escape(commentId) + '"]');
     if (!card) {
       scrollToReviewConversation();
       return;
     }
     ignoreTreeObserverUntil = Date.now() + 200;
-    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // The conversation is the review list's header. A smooth scroll there
+    // stops partway: files mounting on the way up adjust scrollTop, and that
+    // cancels the browser's animation.
+    if (section.closest('#filesContainer')) scrollPierreElementIntoView(card, function() { return seq === pierreJumpSeq; });
+    else card.scrollIntoView({ block: 'center', behavior: 'instant' });
     card.classList.remove('comment-card-highlight');
     void card.offsetWidth;
     card.classList.add('comment-card-highlight');
