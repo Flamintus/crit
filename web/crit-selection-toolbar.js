@@ -14,36 +14,104 @@
   const GAP = 8; // between the selection and the bar
   const MARGIN = 8; // from the viewport edges and the top boundary
 
-  // Viewport position of a toolbar of `size` ({width, height}) for an
-  // `anchor` ({top, left, width, bottom}): centred above it, below it when
-  // the space above is under `topBoundary` (sticky headers), and kept inside
-  // the viewport.
-  function computeToolbarPosition(anchor, size, viewport, topBoundary) {
-    const minTop = Math.max(0, topBoundary || 0) + MARGIN;
-    let placement = 'above';
-    let top = anchor.top - GAP - size.height;
-    if (top < minTop) {
-      placement = 'below';
-      top = anchor.bottom + GAP;
-    }
-    top = Math.max(minTop, Math.min(top, viewport.height - size.height - MARGIN));
-    const centre = anchor.left + anchor.width / 2;
-    const maxLeft = Math.max(MARGIN, viewport.width - size.width - MARGIN);
-    const left = Math.min(Math.max(centre - size.width / 2, MARGIN), maxLeft);
-    return { top: Math.round(top), left: Math.round(left), placement: placement };
+  // Positions a reader can choose for the bar (Settings > Selection toolbar).
+  // The *-cursor ones follow the selection's direction: the bar goes to the
+  // side where the selection ended, where the pointer was let go.
+  const PLACEMENTS = ['top-left', 'top-center', 'top-right', 'bottom-left', 'bottom-right', 'top-cursor', 'bottom-cursor'];
+  // The choices of Settings > Selection toolbar > Position, in menu order.
+  const PLACEMENT_OPTIONS = [
+    { id: 'top-left', name: 'Top left' },
+    { id: 'top-center', name: 'Top center' },
+    { id: 'top-right', name: 'Top right' },
+    { id: 'bottom-left', name: 'Bottom left' },
+    { id: 'bottom-right', name: 'Bottom right' },
+    { id: 'top-cursor', name: 'Top, closest to the cursor' },
+    { id: 'bottom-cursor', name: 'Bottom, closest to the cursor' },
+    { id: 'off', name: 'Off' },
+  ];
+
+  // The corner a *-cursor placement means for a selection made forwards (left
+  // to right) or backwards; other placements are their own corner.
+  function resolvePlacement(placement, backward) {
+    if (placement === 'top-cursor') return backward ? 'top-left' : 'top-right';
+    if (placement === 'bottom-cursor') return backward ? 'bottom-left' : 'bottom-right';
+    return PLACEMENTS.indexOf(placement) === -1 ? 'top-center' : placement;
   }
 
-  // Where the bar points: centred on the first line of the selection, so a
-  // multi-line selection gets the bar where it starts, and below the whole
-  // selection when it flips.
+  // Viewport position of a toolbar of `size` ({width, height}) for an
+  // `anchor` (see anchorRect), kept inside the viewport and under
+  // `topBoundary` (sticky headers). `placement` (resolved, see
+  // resolvePlacement) picks the corner the bar starts from:
+  //   top-center (default)  centred above the first line;
+  //   top-left / top-right  above the first line, from its start / its end;
+  //   bottom-left / -right  below the last line, from its start / its end.
+  // A top bar goes below the whole selection when the space above is too
+  // short, a bottom bar above the last line when the space below is.
+  function computeToolbarPosition(anchor, size, viewport, topBoundary, placement) {
+    const minTop = Math.max(0, topBoundary || 0) + MARGIN;
+    const maxTop = viewport.height - size.height - MARGIN;
+    const maxLeft = Math.max(MARGIN, viewport.width - size.width - MARGIN);
+    const firstRight = anchor.left + anchor.width;
+    let side = 'above';
+    let top;
+    let left;
+    if (placement === 'bottom-left' || placement === 'bottom-right') {
+      const lastTop = anchor.lastTop === undefined ? anchor.top : anchor.lastTop;
+      const lastBottom = anchor.lastBottom === undefined ? anchor.bottom : anchor.lastBottom;
+      side = 'below';
+      top = lastBottom + GAP;
+      if (top > maxTop) {
+        side = 'above';
+        top = lastTop - GAP - size.height;
+      }
+      if (placement === 'bottom-left') left = anchor.lastLeft === undefined ? anchor.left : anchor.lastLeft;
+      else left = anchor.lastRight === undefined ? firstRight : anchor.lastRight;
+    } else {
+      top = anchor.top - GAP - size.height;
+      if (top < minTop) {
+        side = 'below';
+        top = anchor.bottom + GAP;
+      }
+      if (placement === 'top-left') left = anchor.left;
+      else if (placement === 'top-right') left = firstRight;
+      else left = anchor.left + anchor.width / 2 - size.width / 2;
+    }
+    top = Math.max(minTop, Math.min(top, maxTop));
+    left = Math.min(Math.max(left, MARGIN), maxLeft);
+    return { top: Math.round(top), left: Math.round(left), placement: side };
+  }
+
+  // Whether `selection` was made backwards (its focus before its anchor).
+  function isBackward(selection) {
+    if (!selection) return false;
+    if (typeof selection.direction === 'string') return selection.direction === 'backward';
+    const anchor = selection.anchorNode;
+    const focus = selection.focusNode;
+    if (!anchor || !focus) return false;
+    if (anchor === focus) return selection.focusOffset < selection.anchorOffset;
+    return !!(anchor.compareDocumentPosition(focus) & 2); // Node.DOCUMENT_POSITION_PRECEDING
+  }
+
+  // Where the bar points: the first line of the selection (top placements, so
+  // a multi-line selection gets the bar where it starts), the last line
+  // (bottom placements) and the bottom of the whole selection (flipped bar).
   function anchorRect(range) {
     const bounds = range.getBoundingClientRect();
     const rects = range.getClientRects ? range.getClientRects() : [];
-    let first = bounds;
+    let first = null;
+    let last = null;
     for (let i = 0; i < rects.length; i++) {
-      if (rects[i].width > 0 && rects[i].height > 0) { first = rects[i]; break; }
+      if (rects[i].width > 0 && rects[i].height > 0) {
+        if (!first) first = rects[i];
+        last = rects[i];
+      }
     }
-    return { top: first.top, left: first.left, width: first.width, bottom: bounds.bottom };
+    first = first || bounds;
+    last = last || bounds;
+    return {
+      top: first.top, left: first.left, width: first.width, bottom: bounds.bottom,
+      lastTop: last.top, lastLeft: last.left, lastRight: last.right, lastBottom: last.bottom,
+    };
   }
 
   // Key chord parts of a shortcut binding ("Shift+C" -> ["Shift", "C"]);
@@ -95,6 +163,12 @@
   //   resolve(selection) -> { range, data } | null: the live Range to point
   //                  at and the data for onComment, or null if not commentable
   //   onComment(data) called when the button is clicked
+  //   placement()    one of PLACEMENTS, read each time the bar shows
+  //   pinned()       [{ text, title, emoji, shortcut, display }]: one button per pinned
+  //                  comment template before Comment, read each time the bar
+  //                  shows; `display` is emoji, text or both
+  //   showShortcuts() false to hide the keys on every button, Comment's too
+  //   onPinned(data, item) called when a pinned button is clicked
   function create(options) {
     const opts = options || {};
     const doc = opts.document || document;
@@ -127,8 +201,73 @@
     hint.className = 'crit-selection-toolbar-shortcut';
     hint.setAttribute('aria-hidden', 'true');
     button.appendChild(hint);
+    // Pinned templates come first: they are the shortest path, one click.
+    const pinnedGroup = doc.createElement('span');
+    pinnedGroup.className = 'crit-selection-toolbar-pinned';
+    pinnedGroup.hidden = true;
+    bar.appendChild(pinnedGroup);
     bar.appendChild(button);
     doc.body.appendChild(bar);
+
+    function showShortcuts() {
+      return opts.showShortcuts ? opts.showShortcuts() !== false : true;
+    }
+
+    function appendKeys(parent, binding) {
+      shortcutParts(binding).forEach(function(part) {
+        const kbd = doc.createElement('kbd');
+        kbd.textContent = part;
+        parent.appendChild(kbd);
+      });
+    }
+
+    // One button per pinned template, showing what its `display` asks for; its
+    // text whenever it has no emoji, so no button is empty. Like Comment, a
+    // press keeps the selection and the focus.
+    function renderPinned() {
+      const items = opts.pinned ? opts.pinned() : [];
+      const keys = showShortcuts();
+      pinnedGroup.textContent = '';
+      items.forEach(function(item) {
+        const pin = doc.createElement('button');
+        pin.type = 'button';
+        pin.className = 'crit-selection-toolbar-btn crit-selection-toolbar-pin';
+        const withEmoji = item.display !== 'text' && !!item.emoji;
+        if (withEmoji) {
+          const emoji = doc.createElement('span');
+          emoji.className = 'crit-selection-toolbar-pin-emoji';
+          emoji.setAttribute('aria-hidden', 'true');
+          emoji.textContent = item.emoji;
+          pin.appendChild(emoji);
+        }
+        if (item.display !== 'emoji' || !withEmoji) {
+          const text = doc.createElement('span');
+          text.className = 'crit-selection-toolbar-pin-text';
+          text.textContent = item.title || item.text;
+          pin.appendChild(text);
+        }
+        if (item.shortcut) {
+          pin.setAttribute('aria-keyshortcuts', shortcutParts(item.shortcut).join('+'));
+          if (keys) {
+            const hintKeys = doc.createElement('span');
+            hintKeys.className = 'crit-selection-toolbar-shortcut';
+            hintKeys.setAttribute('aria-hidden', 'true');
+            appendKeys(hintKeys, item.shortcut);
+            pin.appendChild(hintKeys);
+          }
+        }
+        pin.title = item.text;
+        pin.setAttribute('aria-label', 'Comment "' + (item.title || item.text) + '"');
+        pin.addEventListener('mousedown', function(e) { e.preventDefault(); });
+        pin.addEventListener('click', function() {
+          const current = payload;
+          hide();
+          if (current && opts.onPinned) opts.onPinned(current, item);
+        });
+        pinnedGroup.appendChild(pin);
+      });
+      pinnedGroup.hidden = items.length === 0;
+    }
 
     function snapshot() {
       return selectionSnapshot(doc.getSelection(), opts.shadowRoots ? opts.shadowRoots() : []);
@@ -189,31 +328,30 @@
     function onViewportChange() { hide(); }
 
     function renderShortcut() {
-      const parts = shortcutParts(opts.shortcut ? opts.shortcut() : '');
+      const binding = opts.shortcut ? opts.shortcut() : '';
+      const parts = shortcutParts(binding);
       hint.textContent = '';
-      parts.forEach(function(part) {
-        const kbd = doc.createElement('kbd');
-        kbd.textContent = part;
-        hint.appendChild(kbd);
-      });
-      hint.hidden = parts.length === 0;
+      appendKeys(hint, binding);
+      hint.hidden = parts.length === 0 || !showShortcuts();
       if (parts.length) button.setAttribute('aria-keyshortcuts', parts.join('+'));
       else button.removeAttribute('aria-keyshortcuts');
     }
 
     // Show the bar for `range` (a live Range over the selection); `data` is
-    // handed back to onComment when the button is clicked.
+    // handed back to onComment or onPinned when a button is clicked.
     function show(range, data) {
       payload = data;
       shown = snapshot();
       renderShortcut();
+      renderPinned();
       bar.style.visibility = 'hidden';
       bar.hidden = false;
       const pos = computeToolbarPosition(
         anchorRect(range),
         { width: bar.offsetWidth, height: bar.offsetHeight },
         { width: win.innerWidth, height: win.innerHeight },
-        opts.topBoundary ? opts.topBoundary() : 0
+        opts.topBoundary ? opts.topBoundary() : 0,
+        resolvePlacement(opts.placement ? opts.placement() : 'top-center', isBackward(doc.getSelection()))
       );
       bar.style.top = pos.top + 'px';
       bar.style.left = pos.left + 'px';
@@ -261,6 +399,10 @@
   }
 
   const api = {
+    PLACEMENTS: PLACEMENTS,
+    PLACEMENT_OPTIONS: PLACEMENT_OPTIONS,
+    resolvePlacement: resolvePlacement,
+    isBackward: isBackward,
     create: create,
     computeToolbarPosition: computeToolbarPosition,
     anchorRect: anchorRect,

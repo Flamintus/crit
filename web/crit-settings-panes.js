@@ -646,6 +646,38 @@
 
     html += '</div>'; // close settings-display-group
 
+    // ---------- Selection toolbar ----------
+    // Where the bar shows around a selection (or off), and whether its buttons
+    // show their shortcut; what each pinned template shows is set per template.
+    if (hooks.selectionToolbar) {
+      var toolbarPlacement = getSetting('selectionToolbar', 'top-center');
+      var toolbarShortcuts = getSetting('selectionToolbarShortcuts', true) !== false;
+      html += '<div class="settings-section-label">Selection toolbar</div>';
+      html += '<div class="settings-display-group">';
+      html += '<div class="settings-display-row">';
+      html += '<label class="settings-display-label" for="selectionToolbarSelect">Position</label>';
+      html += '<select class="settings-select" id="selectionToolbarSelect">';
+      hooks.selectionToolbar.PLACEMENT_OPTIONS.forEach(function (o) {
+        html += '<option value="' + o.id + '"' + (o.id === toolbarPlacement ? ' selected' : '') + '>' + o.name + '</option>';
+      });
+      html += '</select></div>';
+      html += '<div class="settings-display-row">';
+      html += '<span class="settings-display-label">Show shortcuts</span>';
+      html += '<label class="comments-panel-switch">';
+      html += '<input type="checkbox" id="toolbarShortcutsToggle" aria-label="Show shortcuts in the selection toolbar"' + (toolbarShortcuts ? ' checked' : '') + '>';
+      html += '<span class="comments-panel-switch-track"><span class="comments-panel-switch-thumb"></span></span>';
+      html += '</label>';
+      html += '</div>';
+      html += '</div>';
+    }
+
+    // ---------- Comment templates ----------
+    // Rows are built as DOM after the pane renders (commentTemplates.renderSettingsList).
+    if (hooks.commentTemplates) {
+      html += '<div class="settings-section-label">Comment templates</div>';
+      html += '<div class="settings-templates" id="settingsTemplates"></div>';
+    }
+
     // ---------- Configuration ----------
     var anyConfigCard = show.account || show.agent || show.share;
     if (anyConfigCard) {
@@ -834,6 +866,23 @@
         }).finally(function() { select.disabled = false; });
       });
     });
+
+    // Read by the selection toolbar each time it shows: no reload needed.
+    var toolbarSelect = pane.querySelector('#selectionToolbarSelect');
+    if (toolbarSelect) {
+      toolbarSelect.addEventListener('change', function () {
+        setSetting('selectionToolbar', toolbarSelect.value);
+      });
+    }
+    var shortcutsToggle = pane.querySelector('#toolbarShortcutsToggle');
+    if (shortcutsToggle) {
+      shortcutsToggle.addEventListener('change', function () {
+        setSetting('selectionToolbarShortcuts', shortcutsToggle.checked);
+      });
+    }
+    if (hooks.commentTemplates) {
+      hooks.commentTemplates.renderSettingsList(pane.querySelector('#settingsTemplates'));
+    }
     wireConfigCardActions(pane, hooks);
   }
 
