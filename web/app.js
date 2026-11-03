@@ -10431,10 +10431,13 @@
       if (data.message) openSubThreadForm(data.message);
       else openForm(data.form);
     },
-    onPinned: function(form, item) {
+    onPinned: function(data, item) {
       const selection = window.getSelection();
       if (selection) selection.removeAllRanges();
-      submitPinnedTemplate(form, item.text);
+      // A passage of a message has no one-click comment: a pinned template
+      // opens its sub-thread form there, as Comment does.
+      if (data.message) openSubThreadForm(data.message);
+      else submitPinnedTemplate(data.form, item.text);
     },
   });
 
